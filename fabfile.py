@@ -1,24 +1,50 @@
 from fabric.api import task, cd, run, env, prompt, execute, sudo
-from fabric.api import open_shell, settings, put
+from fabric.api import open_shell, settings, put, local
 import os
 import boto.ec2
 import time
 
+#
+#
+# TO DEPLOY THE APPLICATION:
+#
+#
+#       fab run_complete_setup
+#       fab create_superuser
+#
+#
+#
+
+
+# do not check credentials into a public repo, or probably any
+#  repo. Instead, the credentials file is kept on the local machine
+#  and prior to deployment, it must be moved into the directory
+#  containing this fabfile.
+import credentials
+credentials.set_credentials()
 
 # def create_aws_env():
-env.hosts = ['*',]
+env.hosts = ['*', ]
 env['user'] = 'ubuntu'
 # Getting a connection to us-west-2:
 env['aws_region'] = 'us-west-2'
-execfile("./imagr_site/imagr_site/credentials.py")
 
 
+def _install_pips(askforchoice=True):
+    with cd("django-imagr"):
+        # For some reason, python-pip doesn't install correctly
+        #  on the free tier AMI. So instead of apt-get, install
+        #  it from the source location
+        #   sudo("apt-get remove python-pip")
+        sudo("wget http://raw.github.com/pypa/pip/master/contrib/get-pip.py")
+        sudo("python get-pip.py")
+
+        sudo("pip install -r requirements.txt")
 
 
+def install_pips(askforchoice=False):
+    run_command_on_selected_server(_install_pips, askforchoice=askforchoice)
 
-def install_pips():
-    sudo("pip install -r requirements.txt")
-    pass
 
 # also, we need to sudo and bind on Ubuntu to get access to low number ports
 # sudo(".....b0000")
@@ -28,19 +54,17 @@ def install_pips():
 
 # we will need this string to invoke gunicorn
 
-def runserver():
+def _runserver():
     sudo("/etc/init.d/nginx restart")
     with cd("django-imagr/imagr_site"):
-        sudo("python manage.py migrate")
-        sudo("python manage.py collectstatic")
+        sudo("python manage.py --noinput migrate")
+        sudo("python manage.py --noinput collectstatic")
         # CMGTODO: maybe "run" below to avoid overprivileging the app
-        sudo('gunicorn -b 127.0.0.1:8888 imagr_site.wsgi:application')
+        run('gunicorn -b 127.0.0.1:8888 imagr_site.wsgi:application')
 
 
-
-
-
-
+def runserver(askforchoice=True):
+    run_command_on_selected_server(_runserver, askforchoice=askforchoice)
 
 
 # "Our interactions with boto are all oriented around
@@ -49,10 +73,6 @@ def runserver():
 # manipulating a server once it exists.
 # Before we do that, though we need to
 # get a server running."
-
-
-
-
 def get_ec2_connection():
     if 'ec2' not in env:
         ec2_connection = boto.ec2.connect_to_region(env.aws_region)
@@ -63,8 +83,6 @@ def get_ec2_connection():
             raise IOError(
                 "Unable to connect to EC2 region {}".format(env.aws_region))
     return env.ec2
-
-
 
 
 # "Arguments passed in from the command line appear in your function
@@ -79,7 +97,7 @@ def provision_instance(wait_for_running=False, timeout=60, interval=2):
     #       cost you money if you aren't careful.
     instance_type = 't1.micro'
     # This one is in your ~/.ssh dir:
-    key_name = '20141105'  # probably?? maybe not? ctrl-f tutorial's use of 'pk-'
+    key_name = 'pk-aws'    # key pair name without .PEM suffix
     security_group = 'ssh-access'
     ami_id = 'ami-37501207'
 
@@ -103,9 +121,13 @@ def provision_instance(wait_for_running=False, timeout=60, interval=2):
                 print("Instance {} is currently {}".format(each_instance.id,
                                                            current_state))
                 if current_state == "running":
-                    # NOTE: This part does not work for circumstances where len(new_instances) > 1, but that's okay, because this is provision_instance, not provision_instances(). It's very unpythonic though and must be changed when I have more time.
+                    # NOTE: This part does not work for circumstances where
+                    #  len(new_instances) > 1, but that's okay, because this is
+                    #  provision_instance, not provision_instances(). It's very
+                    #  unpythonic though and must be changed when I have more
+                    #  time.
                     running_instance.append(
-                        new_instances.pop(new_instances.index(each_instance)))  # !
+                        new_instances.pop(new_instances.index(each_instance)))
                 each_instance.update()
 
 # Example use of above function:
@@ -221,8 +243,6 @@ def select_instance(state='running', askforchoice=True):
     env.active_instance = env.instances[choice - 1]['instance']
 
 
-
-
 def run_command_on_selected_server(command, askforchoice=True):
     # Ask the user to select an instance:
     select_instance(askforchoice=askforchoice)
@@ -235,9 +255,19 @@ def run_command_on_selected_server(command, askforchoice=True):
     execute(command, hosts=selected_hosts)
 
 
-def restart_server():
+def run_command_on_localhost(command):
+    execute(command, host=['localhost', ])
+
+
+def _copy_credentials_file_locally():
+    local("cp ./imagr_site/imagr_site/credentials.py ./")
+
+
+def _restart_server():
     sudo("shutdown -r now")
-    time.sleep(60)
+    # No sleep is needed because the main chaining function
+    #  will perform the wait
+    # time.sleep(60)
 
 # "Remember, you cannot use password authentication to log into AWS servers.
 # If you find that you are prompted to enter a password in order to run
@@ -254,16 +284,21 @@ def restart_server():
 # the agent will then try this key along with any others the agent
 # knows about. If no known key works, ssh will bomb out."
 
-
-
 def _setup_imagr_aptgets():
     # check for any system updates
+    # a wait is necessary here because the server may still be
+    # not ready
+    time.sleep(90)
     sudo("apt-get -y update")
 
     # check for any system upgrades
     sudo("apt-get -y upgrade")
 
-    sudo("apt-get -y install python-pip")
+    # normally, install python-pip. But this version is bad for
+    # the Ubuntu on this particular AMI
+    # https://bugs.launchpad.net
+    # /ubuntu/+source/python-pip/+bug/1306991/comments/24
+    # sudo("apt-get -y install python-pip")
     sudo("apt-get -y install python-dev")
     sudo("apt-get -y install postgresql-9.3")
     sudo("apt-get -y install postgresql-server-dev-9.3")
@@ -274,8 +309,7 @@ def _setup_imagr_aptgets():
     # if any updates were performed above, we probably have to reboot server
 
     sudo("/etc/init.d/nginx start")
-    restart_server()
-
+    _restart_server()
 
 
 def setup_imagr_aptgets():
@@ -287,12 +321,15 @@ def _move_sources():
     # We don't want to git clone if we already have this directory
     #  set up on the machine.
     run("git clone https://github.com/CharlesGust/django-imagr.git")
-    sudo("ln -s /home/ubuntu/django-imagr/nginx.conf /etc/nginx/sites-enabled/amazonaws.com")
+    sudo("ln -s " +
+         "/home/ubuntu/django-imagr/nginx.conf " +
+         "/etc/nginx/sites-enabled/amazonaws.com")
 
     with cd("django-imagr"):
-        sudo("pip install -r requirements.txt")
         put("imagr_site/imagr_site/credentials.py",
-           "/home/ubuntu/django-imagr/imagr_site/imagr_site/credentials.py", use_sudo=True)
+            "/home/ubuntu/django-imagr/imagr_site/imagr_site/credentials.py",
+            use_sudo=True)
+
 
 def move_sources():
     run_command_on_selected_server(_move_sources)
@@ -360,32 +397,122 @@ def stop_running_instance(askforchoice=True):
     ec2_connection.stop_instances(instance_ids=[env.active_instance.id])
 
 
-# Similarly to stop_running_instance(), this function will not be
-# effectively chained further up than select_instance().
-def terminate_stopped_instance(askforchoice=True):
-    # This code is also from:
+def _terminate_instance(state, askforchoice=True):
+    # This code is also derived from:
     #    https://github.com/miracode/django-imagr/blob/master/fabfile.py
 
-    select_instance(state='stopped', askforchoice=askforchoice)
+    select_instance(state=state, askforchoice=askforchoice)
 
     ec2_connection = get_ec2_connection()
 
     ec2_connection.terminate_instances(instance_ids=[env.active_instance.id])
 
 
+# Similarly to stop_running_instance(), this function will not be
+# effectively chained further up than select_instance().
+def terminate_stopped_instance(askforchoice=True):
+    _terminate_instance("stopped", askforchoice)
+
+
+def terminate_running_instance(askforchoice=True):
+    _terminate_instance("running", askforchoice)
+
+
 def run_custom_command(command):
     select_instance(askforchoice=False)
     sudo(command)
 
-def _setup_database():
-    pass
 
+# The following comes mostly from miracode again. Reference:
+# https://github.com/miracode/django-imagr/blob/master/fabfile.py
+def _setup_database():
+    # Insert the database password into the os.environ dictionary (without
+    # make it visible on GitHub, from this file):
+    # Turns out this has to be called outside of the fabfile's functions'
+    # scope for some reason -- it can't import packages inside functions
+    # and I'm not entirely sure why. It might be trying to run the functions
+    # somewhere other than the fabfile's directory but on the same machine.
+    # More discussion and a record of my failed attempt is saved at the
+    # following function's comment:
+    # _set_credentials()
+    # Take it out of the dictionary and use it for the SQL command string,
+    # which is handed to the server instance after it's constructed:
+    password = os.environ['DATABASE_PASSWORD']
+
+    sudo('createdb imagr', user='postgres')
+
+    create_user_sql_query = """"
+    CREATE USER imagr WITH password '%s';
+    GRANT ALL ON DATABASE imagr TO imagr;"
+    """ % password
+
+    sudo('psql -U postgres imagr -c %s' % create_user_sql_query,
+         user='postgres')
+
+
+def setup_database(askforchoice=True):
+    run_command_on_selected_server(_setup_database, askforchoice=askforchoice)
+
+
+def _alter_database_user_password():
+    password = os.environ['DATABASE_PASSWORD']
+
+    alter_password_sql_command = "ALTER ROLE imagr password to '%s';" % password
+
+    sudo('psql -U postgres imagr -c "%s"' % alter_password_sql_command,
+         user='postgres')
+
+
+def alter_database_user_password():
+    run_command_on_selected_server(_alter_database_user_password)
+
+
+def ssh():
+    run_command_on_selected_server(open_shell)
 
 
 def run_complete_setup():
     provision_instance(wait_for_running=True)
-    _setup_imagr_aptgets()
-    _move_sources()
-    install_pips()
-    _setup_database()
-    runserver()
+    run_command_on_selected_server(_setup_imagr_aptgets, askforchoice=False)
+    # _setup_imagr_aptgets()
+    time.sleep(120)
+
+    run_command_on_selected_server(_move_sources, askforchoice=False)
+    # _move_sources()
+
+    run_command_on_selected_server(_install_pips, askforchoice=False)
+    # install_pips()
+
+    run_command_on_selected_server(_setup_database, askforchoice=False)
+    # _setup_database()
+
+    run_command_on_selected_server(_runserver, askforchoice=False)
+    # runserver()
+
+
+# At the time of this writing, the app is now deployable automatically
+# using 'fab run_complete_setup' from the fabfile.py directory.
+
+# One problem remains: The django-registration-redux package and its default
+# templates include references to a 'site' object, as in {{ site.domain }},
+# which was not mentioned anywhere else we've run into while developing
+# the project so far.
+
+# This causes it to create emails that redirect newly-registered users to
+# the proxy address gunicorn is using to talk to Nginx, which is currently
+# 127.0.0.1:8888, which will cause registration emails to direct
+# newly-registered users to a nonexistent site on their own machine.
+
+# The fabfile will still start the server on its own, but to make it
+# accessible to the outside world it is currently necessary to make
+# an admin with the following command, once again with credit to:
+# https://github.com/miracode/django-imagr/blob/master/fabfile.py
+def _create_superuser():
+    with cd('django-imagr/imagr_site'):
+        sudo('python manage.py --noinput migrate')
+        sudo('python manage.py -noinput createsuperuser')
+
+
+def create_superuser(askforchoice=False):
+    run_command_on_selected_server(_create_superuser,
+                                   askforchoice=askforchoice)

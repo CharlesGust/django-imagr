@@ -25,13 +25,20 @@ EMAIL_PORT = 25
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ['SECRET_KEY']
 
+import deployment
+deployment.setup_deployment()
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ['DEBUG']
 
-TEMPLATE_DEBUG = True
+TEMPLATE_DEBUG = os.environ['TEMPLATE_DEBUG']
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = os.environ['ALLOWED_HOSTS']
 
+CONN_MAX_AGE = os.environ['CONN_MAX_AGE']
+
+# set up in deployment.py now
+# ALLOWED_HOSTS = []
+# CONN_MAX_AGE = 60
 
 # Application definition
 LOGIN_REDIRECT_URL = "imagr_app:front_page"
@@ -117,9 +124,7 @@ STATIC_ROOT = "static/"
 
 MEDIA_ROOT = "media/"
 
-DEBUG = False
 
-ALLOWED_HOSTS = ['*',]
 
     # There is a risk that the greater security of setting
     #  these to True will not work unless we get an SSL
@@ -132,4 +137,4 @@ ALLOWED_HOSTS = ['*',]
 
     # Performance Optimizations
 
-CONN_MAX_AGE = 60
+

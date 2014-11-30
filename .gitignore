@@ -54,6 +54,7 @@ docs/_build/
 target/
 
 # Known credential files in this repo
+credentials.py
 imagr_site/imagr_site/credentials.py
 
 .DS_Store
